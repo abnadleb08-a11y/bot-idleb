@@ -2,28 +2,33 @@ const { Telegraf, Markup } = require('telegraf');
 const express = require('express');
 const fs = require('fs');
 
-// ==================== الإعدادات الأساسية ====================
+// ==================== الإعدادات ====================
 const BOT_TOKEN = process.env.BOT_TOKEN;
 const ADMIN_ID = parseInt(process.env.ADMIN_ID) || 0;
 
+// التحقق من التوكن
 if (!BOT_TOKEN) {
-    console.error('❌ خطأ: BOT_TOKEN غير موجود');
+    console.error('❌ خطأ: BOT_TOKEN غير موجود في متغيرات البيئة');
     process.exit(1);
 }
+
+console.log('✅ جاري تشغيل البوت...');
+console.log(`📌 التوكن: ${BOT_TOKEN.substring(0, 10)}...`);
 
 const bot = new Telegraf(BOT_TOKEN);
 const app = express();
 app.use(express.json());
 
-// ✅ اسم بوتك الصحيح (بدون @)
 const BOT_NAME = "idlebstore_bot";
 
-// ==================== ملفات التخزين ====================
+// ==================== البيانات ====================
 const PRODUCTS_FILE = 'products.json';
 const USERS_FILE = 'users.json';
 
-// تحميل المنتجات
 let products = [];
+let users = {};
+
+// تحميل المنتجات
 if (fs.existsSync(PRODUCTS_FILE)) {
     products = JSON.parse(fs.readFileSync(PRODUCTS_FILE));
 } else {
@@ -37,163 +42,116 @@ if (fs.existsSync(PRODUCTS_FILE)) {
 }
 
 // تحميل المستخدمين
-let users = {};
 if (fs.existsSync(USERS_FILE)) {
     users = JSON.parse(fs.readFileSync(USERS_FILE));
 }
 
-// ==================== دوال مساعدة ====================
-function saveProducts() {
-    fs.writeFileSync(PRODUCTS_FILE, JSON.stringify(products, null, 2));
-}
+const saveProducts = () => fs.writeFileSync(PRODUCTS_FILE, JSON.stringify(products, null, 2));
+const saveUsers = () => fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
+const formatPrice = (p) => p.toLocaleString('ar-SY') + " ل.س";
+const isAdmin = (id) => id === ADMIN_ID;
+const getShareLink = (id) => `https://t.me/${BOT_NAME}?start=product_${id}`;
 
-function saveUsers() {
-    fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
-}
+// ==================== دوال سريعة ====================
+const getUser = (id) => {
+    if (!users[id]) {
+        users[id] = { balance: 0, purchases: [], name: "مستخدم" };
+        saveUsers();
+    }
+    return users[id];
+};
 
-function formatPrice(p) {
-    return p.toLocaleString('ar-SY') + " ل.س";
-}
+const getProduct = (id) => products.find(p => p.id === id);
 
-function isAdmin(userId) {
-    return userId === ADMIN_ID;
-}
+// ==================== أزرار ====================
+const mainKeyboard = () => Markup.keyboard([
+    ['📦 المنتجات', '💰 رصيدي'],
+    ['🛒 مشترياتي', '📤 رابط المنتج']
+]).resize();
 
-// ✅ دالة إنشاء رابط المشاركة (الرابط الآن صحيح)
-function getProductLink(productId) {
-    return `https://t.me/${BOT_NAME}?start=product_${productId}`;
-}
-
-// ==================== واجهة المنتج ====================
-function productKeyboard(product) {
-    return Markup.inlineKeyboard([
-        [
-            Markup.button.callback('🛒 شراء الآن', `buy_${product.id}`),
-            Markup.button.callback('📤 مشاركة', `share_${product.id}`)
-        ],
-        [
-            Markup.button.url('📥 رابط التحميل', product.link),
-            Markup.button.callback('🔙 رجوع', 'products')
-        ]
-    ]);
-}
-
-function mainKeyboard() {
-    return Markup.keyboard([
-        ['📦 المنتجات', '💰 رصيدي'],
-        ['🛒 مشترياتي', '📤 رابط المنتج'],
-        ['❓ مساعدة']
-    ]).resize();
-}
-
-function adminKeyboard() {
-    return Markup.keyboard([
-        ['➕ إضافة منتج', '✏️ تعديل منتج'],
-        ['🗑️ حذف منتج', '📋 كل المنتجات'],
-        ['💰 شحن رصيد', '👥 المستخدمين'],
-        ['📊 إحصائيات', '🔙 رجوع']
-    ]).resize();
-}
+const adminKeyboard = () => Markup.keyboard([
+    ['➕ إضافة', '✏️ تعديل', '🗑️ حذف'],
+    ['💰 شحن', '👥 مستخدمين', '📊 إحصائيات'],
+    ['🔙 رجوع']
+]).resize();
 
 // ==================== أوامر البوت ====================
 
 // بدء البوت
 bot.start(async (ctx) => {
     const userId = ctx.from.id;
-    const userName = ctx.from.first_name;
+    getUser(userId);
     
-    if (!users[userId]) {
-        users[userId] = {
-            balance: 0,
-            purchases: [],
-            name: userName,
-            username: ctx.from.username,
-            date: new Date().toISOString()
-        };
-        saveUsers();
-    }
-    
-    // ✅ التحقق من رابط المنتج (مثال: https://t.me/idlebstore_bot?start=product_4)
+    // التحقق من رابط المنتج
     const text = ctx.message.text;
     if (text && text.includes('start=product_')) {
         const productId = parseInt(text.split('product_')[1]);
-        const product = products.find(p => p.id === productId);
+        const product = getProduct(productId);
         if (product) {
-            const msg = `📦 *${product.name}*\n\n💰 *السعر:* ${formatPrice(product.price)}\n📂 *القسم:* ${product.category}\n📝 *الوصف:* ${product.desc}\n📊 *المخزون:* ${product.stock}\n\n🔗 *رابط التحميل:* ${product.link}`;
-            return ctx.reply(msg, { parse_mode: 'Markdown', ...productKeyboard(product) });
+            const msg = `📦 *${product.name}*\n💰 ${formatPrice(product.price)}\n📂 ${product.category}\n📝 ${product.desc}\n📥 ${product.link}`;
+            const btns = Markup.inlineKeyboard([
+                [Markup.button.callback('🛒 شراء', `buy_${product.id}`)],
+                [Markup.button.callback('📤 مشاركة', `share_${product.id}`)]
+            ]);
+            return ctx.reply(msg, { parse_mode: 'Markdown', ...btns });
         }
     }
     
-    const welcomeMsg = `🎉 *مرحباً بك يا ${userName} في متجر IDLEB X!*\n\n💰 رصيدك الحالي: ${formatPrice(users[userId].balance)}\n\n📌 استخدم الأزرار أدناه للتنقل في المتجر.`;
+    const welcome = `🎉 مرحباً ${ctx.from.first_name}\n💰 رصيدك: ${formatPrice(users[userId].balance)}`;
     
     if (isAdmin(userId)) {
-        await ctx.reply(welcomeMsg + '\n\n🔧 *أنت مشرف* 🔧', { parse_mode: 'Markdown', ...adminKeyboard() });
+        await ctx.reply(welcome + '\n🔧 لوحة المشرف', { parse_mode: 'Markdown', ...adminKeyboard() });
     } else {
-        await ctx.reply(welcomeMsg, { parse_mode: 'Markdown', ...mainKeyboard() });
+        await ctx.reply(welcome, { parse_mode: 'Markdown', ...mainKeyboard() });
     }
 });
 
 // عرض المنتجات
 bot.hears('📦 المنتجات', async (ctx) => {
-    if (products.length === 0) {
-        return ctx.reply("📦 لا توجد منتجات حالياً.");
-    }
+    if (!products.length) return ctx.reply("لا توجد منتجات");
     
-    let msg = "📦 *قائمة المنتجات:*\n\n";
-    const buttons = [];
-    
+    let msg = "📦 *المنتجات:*\n\n";
+    const btns = [];
     for (const p of products) {
-        msg += `*${p.id}.* ${p.name}\n`;
-        msg += `   💰 ${formatPrice(p.price)}\n`;
-        msg += `   📂 ${p.category}\n\n`;
-        buttons.push([Markup.button.callback(`${p.id}. ${p.name.substring(0, 25)}`, `view_${p.id}`)]);
+        msg += `*${p.id}.* ${p.name} - ${formatPrice(p.price)}\n`;
+        btns.push([Markup.button.callback(`📦 ${p.id}. ${p.name}`, `view_${p.id}`)]);
     }
+    btns.push([Markup.button.callback('🔙 رجوع', 'main')]);
     
-    buttons.push([Markup.button.callback('🔙 القائمة الرئيسية', 'main')]);
-    
-    await ctx.reply(msg, { parse_mode: 'Markdown', ...Markup.inlineKeyboard(buttons) });
+    await ctx.reply(msg, { parse_mode: 'Markdown', ...Markup.inlineKeyboard(btns) });
 });
 
-// عرض منتج معين
+// عرض منتج
 bot.action(/view_(\d+)/, async (ctx) => {
-    const productId = parseInt(ctx.match[1]);
-    const product = products.find(p => p.id === productId);
+    const product = getProduct(parseInt(ctx.match[1]));
+    if (!product) return ctx.answerCbQuery('غير موجود');
     
-    if (!product) {
-        await ctx.answerCbQuery('❌ المنتج غير موجود');
-        return;
-    }
+    const msg = `📦 *${product.name}*\n💰 ${formatPrice(product.price)}\n📂 ${product.category}\n📝 ${product.desc}\n📥 ${product.link}`;
+    const btns = Markup.inlineKeyboard([
+        [Markup.button.callback('🛒 شراء', `buy_${product.id}`)],
+        [Markup.button.callback('📤 مشاركة', `share_${product.id}`)],
+        [Markup.button.callback('🔙 رجوع', 'products')]
+    ]);
     
-    const msg = `📦 *${product.name}*\n\n💰 *السعر:* ${formatPrice(product.price)}\n📂 *القسم:* ${product.category}\n📝 *الوصف:* ${product.desc}\n📊 *المخزون:* ${product.stock}\n\n🔗 *رابط التحميل:* ${product.link}`;
-    
-    await ctx.editMessageText(msg, { parse_mode: 'Markdown', ...productKeyboard(product) });
+    await ctx.editMessageText(msg, { parse_mode: 'Markdown', ...btns });
     await ctx.answerCbQuery();
 });
 
-// شراء منتج
+// شراء
 bot.action(/buy_(\d+)/, async (ctx) => {
     const userId = ctx.from.id;
-    const productId = parseInt(ctx.match[1]);
-    const product = products.find(p => p.id === productId);
+    const product = getProduct(parseInt(ctx.match[1]));
     
-    if (!product) {
-        await ctx.answerCbQuery('❌ المنتج غير موجود');
-        return;
+    if (!product) return ctx.answerCbQuery('غير موجود');
+    
+    const user = getUser(userId);
+    
+    if (user.balance < product.price) {
+        return ctx.answerCbQuery(`❌ رصيدك غير كافٍ! ${formatPrice(user.balance)}`, true);
     }
     
-    if (!users[userId]) {
-        users[userId] = { balance: 0, purchases: [], name: ctx.from.first_name };
-        saveUsers();
-    }
-    
-    if (users[userId].balance < product.price) {
-        await ctx.answerCbQuery(`❌ رصيدك غير كافٍ! رصيدك: ${users[userId].balance}`, true);
-        return;
-    }
-    
-    users[userId].balance -= product.price;
-    users[userId].purchases.push({
-        productId: product.id,
+    user.balance -= product.price;
+    user.purchases.push({
         productName: product.name,
         price: product.price,
         date: new Date().toISOString(),
@@ -204,311 +162,207 @@ bot.action(/buy_(\d+)/, async (ctx) => {
     saveProducts();
     saveUsers();
     
-    const successMsg = `✅ *تم شراء ${product.name} بنجاح!*\n\n💰 الرصيد المتبقي: ${formatPrice(users[userId].balance)}\n\n📥 *رابط التحميل:*\n${product.link}\n\n⚠️ هذا الرابط خاص بك، لا تشاركه مع أحد.`;
-    
-    await ctx.editMessageText(successMsg, { parse_mode: 'Markdown' });
-    await ctx.answerCbQuery('✅ تم الشراء بنجاح!');
+    const msg = `✅ تم شراء ${product.name}!\n💰 رصيدك: ${formatPrice(user.balance)}\n📥 ${product.link}`;
+    await ctx.editMessageText(msg, { parse_mode: 'Markdown' });
+    await ctx.answerCbQuery('✅ تم الشراء');
 });
 
-// مشاركة منتج
+// مشاركة
 bot.action(/share_(\d+)/, async (ctx) => {
-    const productId = parseInt(ctx.match[1]);
-    const product = products.find(p => p.id === productId);
+    const product = getProduct(parseInt(ctx.match[1]));
+    if (!product) return ctx.answerCbQuery('غير موجود');
     
-    if (!product) {
-        await ctx.answerCbQuery('❌ المنتج غير موجود');
-        return;
-    }
-    
-    const shareLink = getProductLink(product.id);
-    const msg = `📤 *رابط مشاركة المنتج: ${product.name}*\n\n🔗 \`${shareLink}\`\n\n✨ *ملاحظة:* من يضغط على هذا الرابط يصل مباشرة للمنتج.`;
-    
-    await ctx.reply(msg, { parse_mode: 'Markdown' });
+    const link = getShareLink(product.id);
+    await ctx.reply(`📤 *رابط مشاركة ${product.name}*\n\n🔗 \`${link}\``, { parse_mode: 'Markdown' });
     await ctx.answerCbQuery();
 });
 
-// رجوع للمنتجات
+// رجوع
 bot.action('products', async (ctx) => {
-    if (products.length === 0) {
-        await ctx.editMessageText("📦 لا توجد منتجات.");
-        return;
-    }
+    if (!products.length) return ctx.editMessageText("لا توجد منتجات");
     
-    let msg = "📦 *قائمة المنتجات:*\n\n";
-    const buttons = [];
-    
+    let msg = "📦 *المنتجات:*\n\n";
+    const btns = [];
     for (const p of products) {
-        msg += `*${p.id}.* ${p.name}\n   💰 ${formatPrice(p.price)}\n   📂 ${p.category}\n\n`;
-        buttons.push([Markup.button.callback(`${p.id}. ${p.name.substring(0, 25)}`, `view_${p.id}`)]);
+        msg += `*${p.id}.* ${p.name} - ${formatPrice(p.price)}\n`;
+        btns.push([Markup.button.callback(`📦 ${p.id}. ${p.name}`, `view_${p.id}`)]);
     }
+    btns.push([Markup.button.callback('🔙 رجوع', 'main')]);
     
-    buttons.push([Markup.button.callback('🔙 القائمة الرئيسية', 'main')]);
-    
-    await ctx.editMessageText(msg, { parse_mode: 'Markdown', ...Markup.inlineKeyboard(buttons) });
+    await ctx.editMessageText(msg, { parse_mode: 'Markdown', ...Markup.inlineKeyboard(btns) });
     await ctx.answerCbQuery();
 });
 
-// القائمة الرئيسية
 bot.action('main', async (ctx) => {
     const userId = ctx.from.id;
-    const msg = `🎉 *مرحباً بك في متجر IDLEB X!*\n\n💰 رصيدك: ${formatPrice(users[userId]?.balance || 0)}`;
+    const msg = `🎉 مرحباً\n💰 رصيدك: ${formatPrice(users[userId]?.balance || 0)}`;
     
     if (isAdmin(userId)) {
-        await ctx.editMessageText(msg + '\n\n🔧 *أنت مشرف* 🔧', { parse_mode: 'Markdown', ...adminKeyboard() });
+        await ctx.editMessageText(msg + '\n🔧 مشرف', { parse_mode: 'Markdown', ...adminKeyboard() });
     } else {
         await ctx.editMessageText(msg, { parse_mode: 'Markdown', ...mainKeyboard() });
     }
     await ctx.answerCbQuery();
 });
 
-// عرض الرصيد
+// رصيدي
 bot.hears('💰 رصيدي', async (ctx) => {
-    const userId = ctx.from.id;
-    const balance = users[userId]?.balance || 0;
-    await ctx.reply(`💰 *رصيدك الحالي:* ${formatPrice(balance)}`, { parse_mode: 'Markdown' });
+    const user = getUser(ctx.from.id);
+    await ctx.reply(`💰 رصيدك: ${formatPrice(user.balance)}`, { parse_mode: 'Markdown' });
 });
 
-// عرض المشتريات
+// مشترياتي
 bot.hears('🛒 مشترياتي', async (ctx) => {
-    const userId = ctx.from.id;
-    const user = users[userId];
+    const user = getUser(ctx.from.id);
     
-    if (!user || !user.purchases || user.purchases.length === 0) {
-        return ctx.reply("📦 لم تقم بشراء أي منتج بعد.");
-    }
+    if (!user.purchases.length) return ctx.reply("📦 لا توجد مشتريات");
     
     let msg = "🛒 *مشترياتك:*\n\n";
     user.purchases.forEach((p, i) => {
-        msg += `${i + 1}. *${p.productName}*\n`;
-        msg += `   💰 ${formatPrice(p.price)}\n`;
-        msg += `   📅 ${new Date(p.date).toLocaleDateString('ar-SY')}\n`;
-        msg += `   🔗 ${p.link}\n\n`;
+        msg += `${i+1}. ${p.productName}\n   💰 ${formatPrice(p.price)}\n   📅 ${new Date(p.date).toLocaleDateString()}\n\n`;
     });
-    
     await ctx.reply(msg, { parse_mode: 'Markdown' });
 });
 
-// رابط المنتج
+// رابط منتج
 bot.hears('📤 رابط المنتج', async (ctx) => {
-    let msg = "📤 *اختر المنتج للحصول على رابط المشاركة:*\n\n";
-    products.forEach(p => {
+    let msg = "📤 *روابط المنتجات:*\n\n";
+    for (const p of products) {
         msg += `*/share_${p.id}* - ${p.name}\n`;
-    });
-    msg += `\nأرسل: /share_1 للحصول على رابط المنتج رقم 1`;
-    await ctx.reply(msg, { parse_mode: 'Markdown' });
-});
-
-// أوامر رابط المشاركة لكل منتج
-products.forEach(p => {
-    bot.command(`share_${p.id}`, async (ctx) => {
-        const shareLink = getProductLink(p.id);
-        const msg = `📤 *رابط مشاركة ${p.name}*\n\n🔗 \`${shareLink}\`\n\n💰 السعر: ${formatPrice(p.price)}\n\n✨ اضغط على الرابط وانسخه، ثم أرسله لأي شخص.`;
-        await ctx.reply(msg, { parse_mode: 'Markdown' });
-    });
-});
-
-// مساعدة
-bot.hears('❓ مساعدة', async (ctx) => {
-    const msg = `🔧 *قائمة الأوامر:*\n\n📦 /products - عرض جميع المنتجات\n💰 /balance - عرض رصيدك\n🛒 /purchases - عرض مشترياتك\n📤 /share_1 - رابط مشاركة المنتج رقم 1\n\n🛒 *للشراء:* اضغط على "شراء الآن" بجانب أي منتج.`;
+    }
     await ctx.reply(msg, { parse_mode: 'Markdown' });
 });
 
 // أوامر سريعة
+for (const p of products) {
+    bot.command(`share_${p.id}`, async (ctx) => {
+        await ctx.reply(`📤 *${p.name}*\n🔗 ${getShareLink(p.id)}`, { parse_mode: 'Markdown' });
+    });
+}
+
 bot.command('products', async (ctx) => {
-    if (products.length === 0) return ctx.reply("📦 لا توجد منتجات.");
-    
-    let msg = "📦 *قائمة المنتجات:*\n\n";
+    let msg = "📦 *المنتجات:*\n\n";
     for (const p of products) {
-        msg += `*${p.id}.* ${p.name}\n   💰 ${formatPrice(p.price)}\n   📂 ${p.category}\n\n`;
+        msg += `*${p.id}.* ${p.name} - ${formatPrice(p.price)}\n`;
     }
     await ctx.reply(msg, { parse_mode: 'Markdown' });
 });
 
 bot.command('balance', async (ctx) => {
-    const userId = ctx.from.id;
-    const balance = users[userId]?.balance || 0;
-    await ctx.reply(`💰 *رصيدك:* ${formatPrice(balance)}`, { parse_mode: 'Markdown' });
-});
-
-bot.command('purchases', async (ctx) => {
-    const userId = ctx.from.id;
-    const user = users[userId];
-    
-    if (!user || !user.purchases || user.purchases.length === 0) {
-        return ctx.reply("📦 لم تشترِ أي منتج بعد.");
-    }
-    
-    let msg = "🛒 *مشترياتك:*\n\n";
-    user.purchases.forEach((p, i) => {
-        msg += `${i + 1}. ${p.productName} - ${formatPrice(p.price)}\n`;
-        msg += `   📅 ${new Date(p.date).toLocaleDateString('ar-SY')}\n`;
-    });
-    await ctx.reply(msg, { parse_mode: 'Markdown' });
+    const user = getUser(ctx.from.id);
+    await ctx.reply(`💰 ${formatPrice(user.balance)}`, { parse_mode: 'Markdown' });
 });
 
 // ==================== أوامر المشرف ====================
 
-// إظهار لوحة المشرف
 bot.hears('🔙 رجوع', async (ctx) => {
-    const userId = ctx.from.id;
-    if (isAdmin(userId)) {
-        await ctx.reply('🔧 *لوحة تحكم المشرف*', { parse_mode: 'Markdown', ...adminKeyboard() });
+    if (isAdmin(ctx.from.id)) {
+        await ctx.reply('🔧 لوحة المشرف', { ...adminKeyboard() });
     } else {
-        await ctx.reply('🎉 *القائمة الرئيسية*', { parse_mode: 'Markdown', ...mainKeyboard() });
+        await ctx.reply('🎉 القائمة الرئيسية', { ...mainKeyboard() });
     }
 });
 
 // إضافة منتج
-bot.hears('➕ إضافة منتج', async (ctx) => {
-    if (!isAdmin(ctx.from.id)) return ctx.reply("⛔ هذا الأمر للمشرف فقط");
-    ctx.reply(`📝 *إضافة منتج جديد*\n\nأرسل المعلومات بهذا التنسيق:\n\n\`\`\`\nالاسم: اسم المنتج\nالسعر: 100000\nالرابط: https://t.me/...\nالقسم: اختبار الاختراق\nالوصف: وصف المنتج\nالمخزون: 999\n\`\`\``, { parse_mode: 'Markdown' });
+bot.hears('➕ إضافة', async (ctx) => {
+    if (!isAdmin(ctx.from.id)) return;
+    await ctx.reply(`📝 أرسل:\nالاسم: ...\nالسعر: ...\nالرابط: ...\nالقسم: ...\nالوصف: ...\nالمخزون: ...`);
 });
 
 // تعديل منتج
-bot.hears('✏️ تعديل منتج', async (ctx) => {
-    if (!isAdmin(ctx.from.id)) return ctx.reply("⛔ هذا الأمر للمشرف فقط");
-    
-    let msg = "✏️ *تعديل منتج*\n\nاختر المنتج:\n\n";
-    products.forEach(p => {
-        msg += `${p.id}. ${p.name}\n`;
-    });
-    msg += `\nأرسل: /edit_1 لتعديل المنتج رقم 1`;
-    await ctx.reply(msg, { parse_mode: 'Markdown' });
+bot.hears('✏️ تعديل', async (ctx) => {
+    if (!isAdmin(ctx.from.id)) return;
+    let msg = "✏️ اختر المنتج:\n";
+    for (const p of products) {
+        msg += `/edit_${p.id} - ${p.name}\n`;
+    }
+    await ctx.reply(msg);
 });
 
 // حذف منتج
-bot.hears('🗑️ حذف منتج', async (ctx) => {
-    if (!isAdmin(ctx.from.id)) return ctx.reply("⛔ هذا الأمر للمشرف فقط");
-    
-    let msg = "🗑️ *حذف منتج*\n\nاختر المنتج:\n\n";
-    products.forEach(p => {
-        msg += `${p.id}. ${p.name}\n`;
-    });
-    msg += `\nأرسل: /delete_1 لحذف المنتج رقم 1`;
-    await ctx.reply(msg, { parse_mode: 'Markdown' });
-});
-
-// عرض كل المنتجات للمشرف
-bot.hears('📋 كل المنتجات', async (ctx) => {
-    if (!isAdmin(ctx.from.id)) return ctx.reply("⛔ هذا الأمر للمشرف فقط");
-    
-    let msg = "📋 *جميع المنتجات*\n\n";
-    products.forEach(p => {
-        msg += `*${p.id}. ${p.name}*\n`;
-        msg += `   💰 ${formatPrice(p.price)}\n`;
-        msg += `   🔗 ${p.link}\n`;
-        msg += `   📂 ${p.category}\n`;
-        msg += `   📊 المخزون: ${p.stock}\n`;
-        msg += `   🔗 رابط المشاركة: ${getProductLink(p.id)}\n\n`;
-    });
-    await ctx.reply(msg, { parse_mode: 'Markdown' });
+bot.hears('🗑️ حذف', async (ctx) => {
+    if (!isAdmin(ctx.from.id)) return;
+    let msg = "🗑️ اختر المنتج:\n";
+    for (const p of products) {
+        msg += `/del_${p.id} - ${p.name}\n`;
+    }
+    await ctx.reply(msg);
 });
 
 // شحن رصيد
-bot.hears('💰 شحن رصيد', async (ctx) => {
-    if (!isAdmin(ctx.from.id)) return ctx.reply("⛔ هذا الأمر للمشرف فقط");
-    ctx.reply("💰 *شحن رصيد مستخدم*\n\nأرسل: `/charge 123456789 50000`\n\n(معرف المستخدم + المبلغ)", { parse_mode: 'Markdown' });
+bot.hears('💰 شحن', async (ctx) => {
+    if (!isAdmin(ctx.from.id)) return;
+    await ctx.reply("💰 أرسل: `/charge 123456789 50000`", { parse_mode: 'Markdown' });
 });
 
-// عرض المستخدمين
-bot.hears('👥 المستخدمين', async (ctx) => {
-    if (!isAdmin(ctx.from.id)) return ctx.reply("⛔ هذا الأمر للمشرف فقط");
+// المستخدمين
+bot.hears('👥 مستخدمين', async (ctx) => {
+    if (!isAdmin(ctx.from.id)) return;
     
-    const userList = Object.entries(users);
-    if (userList.length === 0) return ctx.reply("لا يوجد مستخدمين");
-    
-    let msg = "👥 *قائمة المستخدمين:*\n\n";
-    userList.slice(0, 30).forEach(([id, data]) => {
-        msg += `🆔 \`${id}\`\n`;
-        msg += `   👤 ${data.name || "بدون اسم"}\n`;
-        msg += `   💰 ${formatPrice(data.balance)}\n`;
-        msg += `   🛒 ${data.purchases?.length || 0} مشتريات\n\n`;
-    });
+    let msg = "👥 *المستخدمين:*\n\n";
+    const list = Object.entries(users).slice(0, 20);
+    for (const [id, data] of list) {
+        msg += `🆔 ${id}\n   💰 ${formatPrice(data.balance)}\n   🛒 ${data.purchases?.length || 0}\n\n`;
+    }
     await ctx.reply(msg, { parse_mode: 'Markdown' });
 });
 
 // إحصائيات
 bot.hears('📊 إحصائيات', async (ctx) => {
-    if (!isAdmin(ctx.from.id)) return ctx.reply("⛔ هذا الأمر للمشرف فقط");
+    if (!isAdmin(ctx.from.id)) return;
     
     const totalUsers = Object.keys(users).length;
-    const totalSales = Object.values(users).reduce((sum, u) => sum + (u.purchases?.length || 0), 0);
-    const totalRevenue = Object.values(users).reduce((sum, u) => {
-        return sum + (u.purchases?.reduce((s, p) => s + p.price, 0) || 0);
+    const totalSales = Object.values(users).reduce((s, u) => s + (u.purchases?.length || 0), 0);
+    const totalRevenue = Object.values(users).reduce((s, u) => {
+        return s + (u.purchases?.reduce((a, p) => a + p.price, 0) || 0);
     }, 0);
     
-    const msg = `📊 *إحصائيات البوت*\n\n👥 المستخدمين: ${totalUsers}\n🛒 المبيعات: ${totalSales}\n💰 الإيرادات: ${formatPrice(totalRevenue)}\n📦 المنتجات: ${products.length}`;
+    const msg = `📊 *إحصائيات*\n👥 ${totalUsers}\n🛒 ${totalSales}\n💰 ${formatPrice(totalRevenue)}\n📦 ${products.length}`;
     await ctx.reply(msg, { parse_mode: 'Markdown' });
 });
 
-// ==================== أوامر نصية للمشرف ====================
-
-// إضافة منتج (معالجة النص)
+// معالجة إضافة منتج
 bot.on('text', async (ctx) => {
     const text = ctx.message.text;
-    const userId = ctx.from.id;
+    if (!isAdmin(ctx.from.id)) return;
+    if (!text.includes('الاسم:') || !text.includes('السعر:')) return;
     
-    if (!isAdmin(userId)) return;
+    const name = text.match(/الاسم: (.*)/)?.[1];
+    const price = parseInt(text.match(/السعر: (\d+)/)?.[1]);
+    const link = text.match(/الرابط: (.*)/)?.[1];
+    const category = text.match(/القسم: (.*)/)?.[1];
+    const desc = text.match(/الوصف: (.*)/)?.[1];
+    const stock = parseInt(text.match(/المخزون: (\d+)/)?.[1]) || 999;
     
-    if (text.includes('الاسم:') && text.includes('السعر:')) {
-        const name = text.match(/الاسم: (.*)/)?.[1];
-        const price = parseInt(text.match(/السعر: (\d+)/)?.[1]);
-        const link = text.match(/الرابط: (.*)/)?.[1];
-        const category = text.match(/القسم: (.*)/)?.[1];
-        const desc = text.match(/الوصف: (.*)/)?.[1];
-        const stock = parseInt(text.match(/المخزون: (\d+)/)?.[1]) || 999;
-        
-        if (!name || !price || !link) {
-            return ctx.reply("❌ البيانات غير مكتملة. الاسم والسعر والرابط مطلوبة.");
-        }
-        
-        const newId = products.length > 0 ? Math.max(...products.map(p => p.id)) + 1 : 1;
-        const newProduct = {
-            id: newId,
-            name: name.trim(),
-            price: price,
-            link: link.trim(),
-            category: category || "عام",
-            desc: desc || "لا يوجد وصف",
-            stock: stock
-        };
-        
-        products.push(newProduct);
-        saveProducts();
-        
-        await ctx.reply(`✅ *تم إضافة المنتج بنجاح!*\n\n📦 ${name}\n💰 ${formatPrice(price)}\n🔗 رابط المشاركة: ${getProductLink(newId)}`, { parse_mode: 'Markdown' });
-    }
+    if (!name || !price || !link) return ctx.reply("❌ الاسم والسعر والرابط مطلوبة");
+    
+    const newId = products.length ? Math.max(...products.map(p => p.id)) + 1 : 1;
+    products.push({ id: newId, name: name.trim(), price, link: link.trim(), category: category || "عام", desc: desc || "", stock });
+    saveProducts();
+    
+    await ctx.reply(`✅ تم إضافة ${name}\n🔗 ${getShareLink(newId)}`);
 });
 
 // تعديل منتج
 bot.command(/edit_(\d+)/, async (ctx) => {
     if (!isAdmin(ctx.from.id)) return;
+    const product = getProduct(parseInt(ctx.match[1]));
+    if (!product) return ctx.reply("غير موجود");
     
-    const productId = parseInt(ctx.match[1]);
-    const product = products.find(p => p.id === productId);
-    
-    if (!product) return ctx.reply("❌ منتج غير موجود");
-    
-    ctx.reply(`✏️ *تعديل المنتج: ${product.name}*\n\nأرسل المعلومات الجديدة:\n\n\`\`\`\nالاسم: ${product.name}\nالسعر: ${product.price}\nالرابط: ${product.link}\nالقسم: ${product.category}\nالوصف: ${product.desc}\nالمخزون: ${product.stock}\n\`\`\``, { parse_mode: 'Markdown' });
-    
-    ctx.session = ctx.session || {};
-    ctx.session.editingProduct = productId;
+    await ctx.reply(`✏️ تعديل ${product.name}\nأرسل:\nالاسم: ${product.name}\nالسعر: ${product.price}\nالرابط: ${product.link}\nالقسم: ${product.category}\nالوصف: ${product.desc}\nالمخزون: ${product.stock}`);
 });
 
 // حذف منتج
-bot.command(/delete_(\d+)/, async (ctx) => {
+bot.command(/del_(\d+)/, async (ctx) => {
     if (!isAdmin(ctx.from.id)) return;
-    
-    const productId = parseInt(ctx.match[1]);
-    const index = products.findIndex(p => p.id === productId);
-    
-    if (index === -1) return ctx.reply("❌ منتج غير موجود");
+    const id = parseInt(ctx.match[1]);
+    const index = products.findIndex(p => p.id === id);
+    if (index === -1) return ctx.reply("غير موجود");
     
     const deleted = products[index];
     products.splice(index, 1);
     saveProducts();
-    
-    await ctx.reply(`✅ *تم حذف المنتج:* ${deleted.name}`, { parse_mode: 'Markdown' });
+    await ctx.reply(`✅ تم حذف ${deleted.name}`);
 });
 
 // شحن رصيد
@@ -518,17 +372,13 @@ bot.command(/charge (\d+) (\d+)/, async (ctx) => {
     const userId = parseInt(ctx.match[1]);
     const amount = parseInt(ctx.match[2]);
     
-    if (!users[userId]) {
-        users[userId] = { balance: 0, purchases: [], name: "مستخدم جديد" };
-    }
-    
+    if (!users[userId]) users[userId] = { balance: 0, purchases: [] };
     users[userId].balance += amount;
     saveUsers();
     
-    await ctx.reply(`✅ تم شحن ${formatPrice(amount)} للمستخدم \`${userId}\``, { parse_mode: 'Markdown' });
-    
+    await ctx.reply(`✅ تم شحن ${formatPrice(amount)} للمستخدم ${userId}`);
     try {
-        await bot.telegram.sendMessage(userId, `🎉 تم شحن رصيدك بمبلغ ${formatPrice(amount)}\n💰 رصيدك الحالي: ${formatPrice(users[userId].balance)}`);
+        await bot.telegram.sendMessage(userId, `🎉 تم شحن رصيدك ${formatPrice(amount)}`);
     } catch(e) {}
 });
 
@@ -539,53 +389,42 @@ bot.command(/deduct (\d+) (\d+)/, async (ctx) => {
     const userId = parseInt(ctx.match[1]);
     const amount = parseInt(ctx.match[2]);
     
-    if (!users[userId]) {
-        return ctx.reply("❌ المستخدم غير موجود");
-    }
-    
-    if (users[userId].balance < amount) {
-        return ctx.reply(`❌ رصيد المستخدم غير كافٍ! رصيده: ${formatPrice(users[userId].balance)}`);
-    }
+    if (!users[userId]) return ctx.reply("❌ مستخدم غير موجود");
+    if (users[userId].balance < amount) return ctx.reply(`❌ رصيده ${formatPrice(users[userId].balance)}`);
     
     users[userId].balance -= amount;
     saveUsers();
-    
-    await ctx.reply(`✅ تم خصم ${formatPrice(amount)} من المستخدم \`${userId}\``, { parse_mode: 'Markdown' });
+    await ctx.reply(`✅ تم خصم ${formatPrice(amount)} من ${userId}`);
 });
 
-// ==================== API للموقع ====================
-app.get('/api/products', (req, res) => {
-    res.json(products);
-});
-
+// ==================== API ====================
+app.get('/api/products', (req, res) => res.json(products));
 app.get('/api/product/:id', (req, res) => {
-    const product = products.find(p => p.id == req.params.id);
-    product ? res.json(product) : res.status(404).json({ error: "Not found" });
+    const p = products.find(p => p.id == req.params.id);
+    p ? res.json(p) : res.status(404).json({ error: "Not found" });
 });
 
-app.post('/api/purchase', async (req, res) => {
-    const { userId, productId, productName, amount } = req.body;
-    
-    try {
-        await bot.telegram.sendMessage(userId, `🛍️ طلب شراء جديد!\n\n📦 المنتج: ${productName}\n💰 السعر: ${formatPrice(amount)}\n\nللشراء، استخدم /buy ${productId} في البوت.`);
-        res.json({ success: true });
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
-});
-
-// ==================== تشغيل البوت ====================
+// ==================== التشغيل ====================
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`✅ HTTP server on port ${PORT}`));
+app.listen(PORT, () => console.log(`✅ HTTP على منفذ ${PORT}`));
 
-bot.launch();
-console.log('🤖 IDLEB X Bot is running...');
-console.log(`🤖 Bot username: @${BOT_NAME}`);
-console.log(`👑 Admin ID: ${ADMIN_ID}`);
-console.log(`📦 Products: ${products.length}`);
-console.log(`\n✅ روابط المنتجات الآن صحيحة:`);
-products.forEach(p => {
-    console.log(`   المنتج ${p.id}: https://t.me/${BOT_NAME}?start=product_${p.id}`);
+// محاولة تشغيل البوت مع معالجة الأخطاء
+bot.launch().then(() => {
+    console.log(`✅ البوت @${BOT_NAME} يعمل بنجاح!`);
+    console.log(`👑 المدير: ${ADMIN_ID}`);
+    console.log(`📦 عدد المنتجات: ${products.length}`);
+}).catch((err) => {
+    console.error('❌ فشل تشغيل البوت:', err.message);
+});
+
+// معالجة أخطاء FetchError
+process.on('unhandledRejection', (err) => {
+    if (err.message && err.message.includes('FetchError')) {
+        console.error('⚠️ خطأ في الاتصال: إعادة تشغيل البوت بعد 5 ثواني...');
+        setTimeout(() => {
+            bot.launch();
+        }, 5000);
+    }
 });
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
