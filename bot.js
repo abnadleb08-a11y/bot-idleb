@@ -15,7 +15,7 @@ const bot = new Telegraf(BOT_TOKEN);
 const app = express();
 app.use(express.json());
 
-// اسم البوت (غير هذا لاسم بوتك بدون @)
+// ✅ اسم بوتك الصحيح (بدون @)
 const BOT_NAME = "idlebstore_bot";
 
 // ==================== ملفات التخزين ====================
@@ -30,7 +30,8 @@ if (fs.existsSync(PRODUCTS_FILE)) {
     products = [
         { id: 1, name: "Kali Linux Pro Kit", price: 450000, link: "https://t.me/your_channel/kali", desc: "أداة اختبار الاختراق", category: "اختبار الاختراق", stock: 999 },
         { id: 2, name: "Burp Suite Pro", price: 1250000, link: "https://t.me/your_channel/burp", desc: "رخصة سنة كاملة", category: "اختبار الاختراق", stock: 25 },
-        { id: 3, name: "OSINT Master", price: 320000, link: "https://t.me/your_channel/osint", desc: "50 أداة OSINT", category: "OSINT", stock: 999 }
+        { id: 3, name: "OSINT Master", price: 320000, link: "https://t.me/your_channel/osint", desc: "50 أداة OSINT", category: "OSINT", stock: 999 },
+        { id: 4, name: "VPN Lifetime", price: 850000, link: "https://t.me/your_channel/vpn", desc: "اشتراك مدى الحياة", category: "VPN", stock: 100 }
     ];
     fs.writeFileSync(PRODUCTS_FILE, JSON.stringify(products, null, 2));
 }
@@ -58,6 +59,7 @@ function isAdmin(userId) {
     return userId === ADMIN_ID;
 }
 
+// ✅ دالة إنشاء رابط المشاركة (الرابط الآن صحيح)
 function getProductLink(productId) {
     return `https://t.me/${BOT_NAME}?start=product_${productId}`;
 }
@@ -111,9 +113,9 @@ bot.start(async (ctx) => {
         saveUsers();
     }
     
-    // التحقق من رابط المنتج
+    // ✅ التحقق من رابط المنتج (مثال: https://t.me/idlebstore_bot?start=product_4)
     const text = ctx.message.text;
-    if (text.includes('start=product_')) {
+    if (text && text.includes('start=product_')) {
         const productId = parseInt(text.split('product_')[1]);
         const product = products.find(p => p.id === productId);
         if (product) {
@@ -189,7 +191,6 @@ bot.action(/buy_(\d+)/, async (ctx) => {
         return;
     }
     
-    // عملية الشراء
     users[userId].balance -= product.price;
     users[userId].purchases.push({
         productId: product.id,
@@ -308,7 +309,7 @@ products.forEach(p => {
 
 // مساعدة
 bot.hears('❓ مساعدة', async (ctx) => {
-    const msg = `🔧 *قائمة الأوامر:*\n\n📦 /products - عرض جميع المنتجات\n💰 /balance - عرض رصيدك\n🛒 /purchases - عرض مشترياتك\n📤 /share_1 - رابط مشاركة المنتج رقم 1\n🔗 /link_1 - رابط تحميل المنتج رقم 1\n\n🛒 *للشراء:* اضغط على "شراء الآن" بجانب أي منتج.`;
+    const msg = `🔧 *قائمة الأوامر:*\n\n📦 /products - عرض جميع المنتجات\n💰 /balance - عرض رصيدك\n🛒 /purchases - عرض مشترياتك\n📤 /share_1 - رابط مشاركة المنتج رقم 1\n\n🛒 *للشراء:* اضغط على "شراء الآن" بجانب أي منتج.`;
     await ctx.reply(msg, { parse_mode: 'Markdown' });
 });
 
@@ -449,7 +450,6 @@ bot.on('text', async (ctx) => {
     
     if (!isAdmin(userId)) return;
     
-    // إضافة منتج
     if (text.includes('الاسم:') && text.includes('السعر:')) {
         const name = text.match(/الاسم: (.*)/)?.[1];
         const price = parseInt(text.match(/السعر: (\d+)/)?.[1]);
@@ -491,7 +491,6 @@ bot.command(/edit_(\d+)/, async (ctx) => {
     
     ctx.reply(`✏️ *تعديل المنتج: ${product.name}*\n\nأرسل المعلومات الجديدة:\n\n\`\`\`\nالاسم: ${product.name}\nالسعر: ${product.price}\nالرابط: ${product.link}\nالقسم: ${product.category}\nالوصف: ${product.desc}\nالمخزون: ${product.stock}\n\`\`\``, { parse_mode: 'Markdown' });
     
-    // تخزين مؤقت للمنتج الجاري تعديله
     ctx.session = ctx.session || {};
     ctx.session.editingProduct = productId;
 });
@@ -528,7 +527,6 @@ bot.command(/charge (\d+) (\d+)/, async (ctx) => {
     
     await ctx.reply(`✅ تم شحن ${formatPrice(amount)} للمستخدم \`${userId}\``, { parse_mode: 'Markdown' });
     
-    // إشعار المستخدم
     try {
         await bot.telegram.sendMessage(userId, `🎉 تم شحن رصيدك بمبلغ ${formatPrice(amount)}\n💰 رصيدك الحالي: ${formatPrice(users[userId].balance)}`);
     } catch(e) {}
@@ -582,8 +580,13 @@ app.listen(PORT, () => console.log(`✅ HTTP server on port ${PORT}`));
 
 bot.launch();
 console.log('🤖 IDLEB X Bot is running...');
+console.log(`🤖 Bot username: @${BOT_NAME}`);
 console.log(`👑 Admin ID: ${ADMIN_ID}`);
 console.log(`📦 Products: ${products.length}`);
+console.log(`\n✅ روابط المنتجات الآن صحيحة:`);
+products.forEach(p => {
+    console.log(`   المنتج ${p.id}: https://t.me/${BOT_NAME}?start=product_${p.id}`);
+});
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
