@@ -1,6 +1,8 @@
 const { Telegraf, Markup } = require('telegraf');
 const express = require('express');
 const fs = require('fs');
+const path = require('path');
+const axios = require('axios');
 
 // ==================== الإعدادات ====================
 const BOT_TOKEN = process.env.BOT_TOKEN;
@@ -17,34 +19,28 @@ app.use(express.json());
 
 const BOT_NAME = "idlebstore_bot";
 
-// ==================== ملفات التخزين ====================
+// ==================== مجلدات التخزين ====================
 const PRODUCTS_FILE = 'products.json';
 const USERS_FILE = 'users.json';
-const COUPONS_FILE = 'coupons.json';
-const ORDERS_FILE = 'orders.json';
+const FILES_DIR = path.join(__dirname, 'files');
+const APPS_DIR = path.join(__dirname, 'apps');
 
-// تحميل البيانات
+// إنشاء المجلدات إذا لم توجد
+if (!fs.existsSync(FILES_DIR)) fs.mkdirSync(FILES_DIR, { recursive: true });
+if (!fs.existsSync(APPS_DIR)) fs.mkdirSync(APPS_DIR, { recursive: true });
+
+// ==================== تحميل البيانات ====================
 let products = [];
 let users = {};
-let coupons = [];
-let orders = [];
 
 if (fs.existsSync(PRODUCTS_FILE)) products = JSON.parse(fs.readFileSync(PRODUCTS_FILE));
-else { products = []; fs.writeFileSync(PRODUCTS_FILE, JSON.stringify(products, null, 2)); }
+else fs.writeFileSync(PRODUCTS_FILE, JSON.stringify(products, null, 2));
 
 if (fs.existsSync(USERS_FILE)) users = JSON.parse(fs.readFileSync(USERS_FILE));
-else { users = {}; fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2)); }
-
-if (fs.existsSync(COUPONS_FILE)) coupons = JSON.parse(fs.readFileSync(COUPONS_FILE));
-else { coupons = []; fs.writeFileSync(COUPONS_FILE, JSON.stringify(coupons, null, 2)); }
-
-if (fs.existsSync(ORDERS_FILE)) orders = JSON.parse(fs.readFileSync(ORDERS_FILE));
-else { orders = []; fs.writeFileSync(ORDERS_FILE, JSON.stringify(orders, null, 2)); }
+else fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
 
 const saveProducts = () => fs.writeFileSync(PRODUCTS_FILE, JSON.stringify(products, null, 2));
 const saveUsers = () => fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
-const saveCoupons = () => fs.writeFileSync(COUPONS_FILE, JSON.stringify(coupons, null, 2));
-const saveOrders = () => fs.writeFileSync(ORDERS_FILE, JSON.stringify(orders, null, 2));
 
 const formatPrice = (p) => p.toLocaleString('ar-SY') + " SYP";
 const isAdmin = (id) => id === ADMIN_ID;
@@ -56,7 +52,7 @@ const getUser = (id) => {
         users[id] = { 
             balance: 0, purchases: [], name: "User", 
             referralCode: Math.random().toString(36).substring(2, 8).toUpperCase(),
-            referredBy: null, referralEarnings: 0, cart: [], createdAt: Date.now()
+            cart: [], createdAt: Date.now()
         };
         saveUsers();
     }
@@ -65,277 +61,555 @@ const getUser = (id) => {
 
 const getProduct = (id) => products.find(p => p.id === id);
 
+// ==================== عرض المحتوى حسب نوع المنتج ====================
+function getProductContent(product) {
+    switch(product.type) {
+        case 'link':
+            return `🔗 *رابط التحميل:*\n${product.content}`;
+        case 'file':
+            return `📁 *ملف التحميل:*\nتم حفظ الملف في البوت\n🆔 معرف الملف: \`${product.fileId}\``;
+        case 'app':
+            return `📱 *تطبيق:*\nتم حفظ التطبيق في البوت\n🆔 معرف التطبيق: \`${product.fileId}\``;
+        case 'text':
+            return `📝 *المحتوى:*\n${product.content}`;
+        default:
+            return `🔗 *رابط التحميل:*\n${product.content}`;
+    }
+}
+
 // ==================== أزرار المشرف ====================
-const adminMainMenu = () => Markup.keyboard([
-    ['Products', 'Users', 'Earnings'],
-    ['Coupons', 'Broadcast', 'Stats'],
-    ['Settings', 'Backup', 'Back']
+const adminMenu = () => Markup.keyboard([
+    ['➕ إضافة منتج', '📦 المنتجات', '🗑️ حذف منتج'],
+    ['💰 شحن رصيد', '👥 المستخدمين', '📊 إحصائيات'],
+    ['📤 تصدير البيانات', '🔙 رجوع']
 ]).resize();
 
-const userMainMenu = () => Markup.keyboard([
-    ['Products', 'Search', 'My Cart'],
-    ['Coupons', 'Invite Friend', 'My Balance'],
-    ['Ratings', 'Help']
+const userMenu = () => Markup.keyboard([
+    ['📦 المنتجات', '💰 رصيدي', '🛒 سلتي'],
+    ['🏷️ كوبونات', '📤 دعوة صديق', '❓ مساعدة']
 ]).resize();
+
+// ==================== تخزين جلسات الإضافة ====================
+let addingProduct = {};
 
 // ==================== بدء البوت ====================
 bot.start(async (ctx) => {
     const userId = ctx.from.id;
     getUser(userId);
     
-    const welcome = `Welcome ${ctx.from.first_name} to IDLEB X Store!\n\nYour balance: ${formatPrice(users[userId].balance)}\nYour referral code: ${users[userId].referralCode}`;
+    const welcome = `🎉 مرحباً ${ctx.from.first_name} في متجر IDLEB X!\n\n💰 رصيدك: ${formatPrice(users[userId].balance)}\n🆔 كود دعوتك: ${users[userId].referralCode}`;
     
     if (isAdmin(userId)) {
-        await ctx.reply(welcome + '\n\nAdmin Panel', { parse_mode: 'Markdown', ...adminMainMenu() });
+        await ctx.reply(welcome + '\n\n🔧 *لوحة تحكم المشرف*', { parse_mode: 'Markdown', ...adminMenu() });
     } else {
-        await ctx.reply(welcome, { parse_mode: 'Markdown', ...userMainMenu() });
+        await ctx.reply(welcome, { parse_mode: 'Markdown', ...userMenu() });
     }
 });
 
-// Back button
-bot.hears('Back', async (ctx) => {
+// ==================== رجوع ====================
+bot.hears('🔙 رجوع', async (ctx) => {
     const userId = ctx.from.id;
     const user = getUser(userId);
-    const msg = `Welcome\nYour balance: ${formatPrice(user.balance)}`;
+    const msg = `🎉 مرحباً\n💰 رصيدك: ${formatPrice(user.balance)}`;
     
     if (isAdmin(userId)) {
-        await ctx.reply(msg + '\n\nAdmin Panel', { parse_mode: 'Markdown', ...adminMainMenu() });
+        await ctx.reply(msg + '\n\n🔧 *لوحة تحكم المشرف*', { parse_mode: 'Markdown', ...adminMenu() });
     } else {
-        await ctx.reply(msg, { parse_mode: 'Markdown', ...userMainMenu() });
+        await ctx.reply(msg, { parse_mode: 'Markdown', ...userMenu() });
     }
 });
 
-// Products
-bot.hears('Products', async (ctx) => {
-    if (products.length === 0) return ctx.reply("No products found");
+// ==================== إضافة منتج - اختيار النوع ====================
+bot.hears('➕ إضافة منتج', async (ctx) => {
+    if (!isAdmin(ctx.from.id)) return;
     
-    let msg = "Products:\n\n";
-    for (const p of products) {
-        msg += `${p.id}. ${p.name} - ${formatPrice(p.price)}\n`;
+    const typeBtns = Markup.inlineKeyboard([
+        [Markup.button.callback('🔗 رابط (Link)', 'add_type_link')],
+        [Markup.button.callback('📁 ملف (File Upload)', 'add_type_file')],
+        [Markup.button.callback('📱 تطبيق (App Upload)', 'add_type_app')],
+        [Markup.button.callback('📝 نص (Text)', 'add_type_text')]
+    ]);
+    
+    await ctx.reply('📝 *اختر نوع المنتج:*', { parse_mode: 'Markdown', ...typeBtns });
+});
+
+// ==================== معالج اختيار النوع ====================
+bot.action(/add_type_(.+)/, async (ctx) => {
+    const prodType = ctx.match[1];
+    const userId = ctx.from.id;
+    
+    addingProduct[userId] = { type: prodType, step: 'name' };
+    
+    const typeNames = { link: 'رابط', file: 'ملف', app: 'تطبيق', text: 'نص' };
+    await ctx.editMessageText(`✅ نوع المنتج: ${typeNames[prodType]}\n\n📝 أرسل *اسم المنتج*:`, { parse_mode: 'Markdown' });
+    await ctx.answerCbQuery();
+});
+
+// ==================== معالجة إضافة المنتج (نصي) ====================
+bot.on('text', async (ctx) => {
+    const userId = ctx.from.id;
+    const session = addingProduct[userId];
+    
+    if (!session || !isAdmin(userId)) return;
+    if (ctx.message.text.startsWith('/')) return;
+    
+    const text = ctx.message.text;
+    
+    switch(session.step) {
+        case 'name':
+            session.name = text;
+            session.step = 'price';
+            await ctx.reply(`✅ الاسم: ${text}\n\n💰 أرسل *السعر* (رقم فقط):`, { parse_mode: 'Markdown' });
+            break;
+            
+        case 'price':
+            const price = parseInt(text);
+            if (isNaN(price)) return ctx.reply("❌ الرجاء إدخال رقم صحيح");
+            session.price = price;
+            
+            if (session.type === 'link' || session.type === 'text') {
+                session.step = 'content';
+                const prompt = session.type === 'link' ? '🔗 أرسل *الرابط*:' : '📝 أرسل *المحتوى النصي*:';
+                await ctx.reply(`✅ السعر: ${formatPrice(price)}\n\n${prompt}`, { parse_mode: 'Markdown' });
+            } else if (session.type === 'file') {
+                session.step = 'waiting_file';
+                await ctx.reply(`✅ السعر: ${formatPrice(price)}\n\n📁 *ارفع الملف* (أي نوع ملف)\n\nيمكنك رفع: PDF, ZIP, RAR, DOC, EXE, إلخ`, { parse_mode: 'Markdown' });
+            } else if (session.type === 'app') {
+                session.step = 'waiting_file';
+                await ctx.reply(`✅ السعر: ${formatPrice(price)}\n\n📱 *ارفع ملف APK للتطبيق*\n\n⚠️ يرجى رفع ملف بصيغة .apk فقط`, { parse_mode: 'Markdown' });
+            }
+            break;
+            
+        case 'content':
+            session.content = text;
+            session.step = 'category';
+            await ctx.reply(`✅ المحتوى: ${text.substring(0, 50)}...\n\n📂 أرسل *القسم*:`, { parse_mode: 'Markdown' });
+            break;
+            
+        case 'category':
+            session.category = text;
+            session.step = 'desc';
+            await ctx.reply(`✅ القسم: ${text}\n\n📝 أرسل *وصف المنتج*:`, { parse_mode: 'Markdown' });
+            break;
+            
+        case 'desc':
+            session.desc = text;
+            session.step = 'stock';
+            await ctx.reply(`✅ الوصف: ${text.substring(0, 50)}...\n\n📊 أرسل *المخزون* (رقم فقط):`, { parse_mode: 'Markdown' });
+            break;
+            
+        case 'stock':
+            const stock = parseInt(text);
+            if (isNaN(stock)) return ctx.reply("❌ الرجاء إدخال رقم صحيح");
+            
+            const newId = products.length ? Math.max(...products.map(p => p.id)) + 1 : 1;
+            const newProduct = {
+                id: newId,
+                name: session.name,
+                price: session.price,
+                type: session.type,
+                content: session.content || null,
+                fileId: session.fileId || null,
+                fileName: session.fileName || null,
+                category: session.category,
+                desc: session.desc,
+                stock: stock,
+                sales: 0,
+                rating: 4.5,
+                createdAt: Date.now()
+            };
+            
+            products.push(newProduct);
+            saveProducts();
+            
+            const typeIcon = { link: '🔗', file: '📁', app: '📱', text: '📝' }[session.type];
+            await ctx.reply(`✅ *تم إضافة المنتج بنجاح!*\n\n${typeIcon} ${session.name}\n💰 ${formatPrice(session.price)}\n📂 ${session.category}\n📊 المخزون: ${stock}\n\n🔗 رابط المشاركة: ${getShareLink(newId)}`, { parse_mode: 'Markdown' });
+            
+            delete addingProduct[userId];
+            break;
     }
-    await ctx.reply(msg);
 });
 
-// Search
-bot.hears('Search', async (ctx) => {
-    await ctx.reply("Send product name to search:");
-    bot.once('text', async (ctx2) => {
-        const query = ctx2.message.text.toLowerCase();
-        const results = products.filter(p => p.name.toLowerCase().includes(query));
-        if (results.length === 0) return ctx2.reply("No results");
-        let msg = "Search results:\n\n";
-        for (const p of results) {
-            msg += `${p.id}. ${p.name} - ${formatPrice(p.price)}\n`;
-        }
-        await ctx2.reply(msg);
+// ==================== معالجة رفع الملفات (صور، ملفات، APK) ====================
+bot.on('document', async (ctx) => {
+    const userId = ctx.from.id;
+    const session = addingProduct[userId];
+    
+    if (!session || !isAdmin(userId)) return;
+    if (session.step !== 'waiting_file') return;
+    
+    const file = ctx.message.document;
+    const fileId = file.file_id;
+    const fileName = file.file_name;
+    const fileSize = file.file_size;
+    
+    // التحقق من نوع الملف للتطبيقات
+    if (session.type === 'app' && !fileName.endsWith('.apk')) {
+        return ctx.reply("❌ يرجى رفع ملف بصيغة .apk فقط للتطبيقات");
+    }
+    
+    session.fileId = fileId;
+    session.fileName = fileName;
+    session.content = null;
+    session.step = 'category';
+    
+    const fileSizeMB = (fileSize / 1024 / 1024).toFixed(2);
+    await ctx.reply(`✅ تم استلام الملف: ${fileName}\n📦 الحجم: ${fileSizeMB} MB\n\n📂 أرسل *القسم*:`, { parse_mode: 'Markdown' });
+});
+
+// ==================== عرض المنتجات ====================
+bot.hears('📦 المنتجات', async (ctx) => {
+    if (products.length === 0) return ctx.reply("لا توجد منتجات");
+    
+    let msg = "📦 *المنتجات:*\n\n";
+    const btns = [];
+    for (const p of products.slice(0, 20)) {
+        const icon = { link: '🔗', file: '📁', app: '📱', text: '📝' }[p.type] || '📦';
+        msg += `${icon} *${p.id}.* ${p.name}\n   💰 ${formatPrice(p.price)}\n   📂 ${p.category}\n\n`;
+        btns.push([Markup.button.callback(`${icon} ${p.id}. ${p.name.substring(0, 20)}`, `view_${p.id}`)]);
+    }
+    btns.push([Markup.button.callback('🔙 رجوع', 'main_back')]);
+    
+    await ctx.reply(msg, { parse_mode: 'Markdown', ...Markup.inlineKeyboard(btns) });
+});
+
+// ==================== عرض منتج معين ====================
+bot.action(/view_(\d+)/, async (ctx) => {
+    const product = getProduct(parseInt(ctx.match[1]));
+    if (!product) return ctx.answerCbQuery('منتج غير موجود');
+    
+    const icon = { link: '🔗', file: '📁', app: '📱', text: '📝' }[product.type] || '📦';
+    let msg = `${icon} *${product.name}*\n💰 ${formatPrice(product.price)}\n📂 ${product.category}\n⭐ ${product.rating}/5\n📝 ${product.desc}\n📊 المخزون: ${product.stock}\n\n`;
+    
+    if (product.type === 'link') {
+        msg += `🔗 *رابط التحميل:*\n${product.content}`;
+    } else if (product.type === 'file') {
+        msg += `📁 *ملف التحميل:*\n🆔 معرف الملف: \`${product.fileId}\``;
+    } else if (product.type === 'app') {
+        msg += `📱 *تطبيق:*\n📄 اسم الملف: ${product.fileName}\n🆔 معرف الملف: \`${product.fileId}\``;
+    } else if (product.type === 'text') {
+        msg += `📝 *المحتوى:*\n${product.content}`;
+    }
+    
+    const btns = Markup.inlineKeyboard([
+        [Markup.button.callback('🛒 شراء', `buy_${product.id}`)],
+        [Markup.button.callback('📤 مشاركة', `share_${product.id}`)],
+        [Markup.button.callback('🔙 رجوع', 'products_back')]
+    ]);
+    
+    if (ctx.callbackQuery) {
+        await ctx.editMessageText(msg, { parse_mode: 'Markdown', ...btns });
+        await ctx.answerCbQuery();
+    } else {
+        await ctx.reply(msg, { parse_mode: 'Markdown', ...btns });
+    }
+});
+
+// ==================== شراء منتج ====================
+bot.action(/buy_(\d+)/, async (ctx) => {
+    const userId = ctx.from.id;
+    const product = getProduct(parseInt(ctx.match[1]));
+    
+    if (!product) return ctx.answerCbQuery('منتج غير موجود');
+    
+    const user = getUser(userId);
+    
+    if (user.balance < product.price) {
+        return ctx.answerCbQuery(`❌ رصيدك غير كافٍ! رصيدك: ${user.balance}`, true);
+    }
+    
+    user.balance -= product.price;
+    user.purchases.push({
+        productId: product.id,
+        productName: product.name,
+        price: product.price,
+        date: new Date().toISOString(),
+        type: product.type,
+        content: product.content,
+        fileId: product.fileId,
+        fileName: product.fileName
     });
+    
+    product.stock--;
+    product.sales++;
+    saveProducts();
+    saveUsers();
+    
+    let msg = `✅ *تم شراء ${product.name} بنجاح!*\n💰 رصيدك: ${formatPrice(user.balance)}\n\n`;
+    
+    if (product.type === 'link') {
+        msg += `🔗 *رابط التحميل:*\n${product.content}`;
+    } else if (product.type === 'file') {
+        msg += `📁 *ملف التحميل:*\n🆔 معرف الملف: \`${product.fileId}\``;
+        // إرسال الملف مباشرة
+        try {
+            await ctx.replyWithDocument(product.fileId);
+        } catch(e) {}
+    } else if (product.type === 'app') {
+        msg += `📱 *التطبيق:*\n📄 ${product.fileName}\n🆔 معرف الملف: \`${product.fileId}\``;
+        try {
+            await ctx.replyWithDocument(product.fileId);
+        } catch(e) {}
+    } else if (product.type === 'text') {
+        msg += `📝 *المحتوى:*\n${product.content}`;
+    }
+    
+    await ctx.editMessageText(msg, { parse_mode: 'Markdown' });
+    await ctx.answerCbQuery('✅ تم الشراء');
 });
 
-// My Cart
-bot.hears('My Cart', async (ctx) => {
+// ==================== مشاركة منتج ====================
+bot.action(/share_(\d+)/, async (ctx) => {
+    const product = getProduct(parseInt(ctx.match[1]));
+    if (!product) return ctx.answerCbQuery('منتج غير موجود');
+    
+    const link = getShareLink(product.id);
+    await ctx.reply(`📤 *رابط مشاركة ${product.name}*\n\n🔗 \`${link}\``, { parse_mode: 'Markdown' });
+    await ctx.answerCbQuery();
+});
+
+// ==================== رجوع ====================
+bot.action('products_back', async (ctx) => {
+    if (products.length === 0) return ctx.editMessageText("لا توجد منتجات");
+    
+    let msg = "📦 *المنتجات:*\n\n";
+    const btns = [];
+    for (const p of products.slice(0, 20)) {
+        const icon = { link: '🔗', file: '📁', app: '📱', text: '📝' }[p.type] || '📦';
+        msg += `${icon} *${p.id}.* ${p.name}\n   💰 ${formatPrice(p.price)}\n\n`;
+        btns.push([Markup.button.callback(`${icon} ${p.id}. ${p.name.substring(0, 20)}`, `view_${p.id}`)]);
+    }
+    btns.push([Markup.button.callback('🔙 رجوع', 'main_back')]);
+    
+    await ctx.editMessageText(msg, { parse_mode: 'Markdown', ...Markup.inlineKeyboard(btns) });
+    await ctx.answerCbQuery();
+});
+
+bot.action('main_back', async (ctx) => {
+    const userId = ctx.from.id;
+    const user = getUser(userId);
+    const msg = `🎉 مرحباً\n💰 رصيدك: ${formatPrice(user.balance)}`;
+    
+    if (isAdmin(userId)) {
+        await ctx.editMessageText(msg + '\n\n🔧 *لوحة تحكم المشرف*', { parse_mode: 'Markdown', ...adminMenu() });
+    } else {
+        await ctx.editMessageText(msg, { parse_mode: 'Markdown', ...userMenu() });
+    }
+    await ctx.answerCbQuery();
+});
+
+// ==================== حذف منتج ====================
+bot.hears('🗑️ حذف منتج', async (ctx) => {
+    if (!isAdmin(ctx.from.id)) return;
+    
+    if (products.length === 0) return ctx.reply("لا توجد منتجات للحذف");
+    
+    let msg = "🗑️ *اختر المنتج للحذف:*\n\n";
+    for (const p of products) {
+        const icon = { link: '🔗', file: '📁', app: '📱', text: '📝' }[p.type] || '📦';
+        msg += `${icon} /del_${p.id} - ${p.name}\n`;
+    }
+    msg += `\nأرسل: /del_1 لحذف المنتج رقم 1`;
+    await ctx.reply(msg, { parse_mode: 'Markdown' });
+});
+
+bot.command(/del_(\d+)/, async (ctx) => {
+    if (!isAdmin(ctx.from.id)) return;
+    
+    const id = parseInt(ctx.match[1]);
+    const index = products.findIndex(p => p.id === id);
+    if (index === -1) return ctx.reply("منتج غير موجود");
+    
+    const deleted = products[index];
+    products.splice(index, 1);
+    saveProducts();
+    
+    await ctx.reply(`✅ *تم حذف المنتج:* ${deleted.name}`, { parse_mode: 'Markdown' });
+});
+
+// ==================== شحن رصيد ====================
+bot.hears('💰 شحن رصيد', async (ctx) => {
+    if (!isAdmin(ctx.from.id)) return;
+    await ctx.reply("💰 *شحن رصيد مستخدم*\n\nأرسل: `/charge 123456789 50000`", { parse_mode: 'Markdown' });
+});
+
+bot.command(/charge (\d+) (\d+)/, async (ctx) => {
+    if (!isAdmin(ctx.from.id)) return;
+    
+    const userId = parseInt(ctx.match[1]);
+    const amount = parseInt(ctx.match[2]);
+    
+    if (!users[userId]) users[userId] = { balance: 0, purchases: [], name: "User" };
+    users[userId].balance += amount;
+    saveUsers();
+    
+    await ctx.reply(`✅ تم شحن ${formatPrice(amount)} للمستخدم ${userId}`);
+    try {
+        await bot.telegram.sendMessage(userId, `🎉 تم شحن رصيدك بمبلغ ${formatPrice(amount)}`);
+    } catch(e) {}
+});
+
+// ==================== عرض المستخدمين ====================
+bot.hears('👥 المستخدمين', async (ctx) => {
+    if (!isAdmin(ctx.from.id)) return;
+    
+    const userList = Object.entries(users).slice(0, 20);
+    if (userList.length === 0) return ctx.reply("لا يوجد مستخدمين");
+    
+    let msg = "👥 *المستخدمين:*\n\n";
+    for (const [id, data] of userList) {
+        msg += `🆔 \`${id}\`\n   👤 ${data.name}\n   💰 ${formatPrice(data.balance)}\n   🛒 ${data.purchases?.length || 0} مشتريات\n\n`;
+    }
+    await ctx.reply(msg, { parse_mode: 'Markdown' });
+});
+
+// ==================== إحصائيات ====================
+bot.hears('📊 إحصائيات', async (ctx) => {
+    if (!isAdmin(ctx.from.id)) return;
+    
+    const totalUsers = Object.keys(users).length;
+    const totalProducts = products.length;
+    const totalSales = products.reduce((s, p) => s + (p.sales || 0), 0);
+    const totalRevenue = products.reduce((s, p) => s + ((p.price || 0) * (p.sales || 0)), 0);
+    
+    const linkCount = products.filter(p => p.type === 'link').length;
+    const fileCount = products.filter(p => p.type === 'file').length;
+    const appCount = products.filter(p => p.type === 'app').length;
+    const textCount = products.filter(p => p.type === 'text').length;
+    
+    const msg = `📊 *إحصائيات المتجر*\n\n👥 المستخدمين: ${totalUsers}\n📦 المنتجات: ${totalProducts}\n   🔗 رابط: ${linkCount}\n   📁 ملف: ${fileCount}\n   📱 تطبيق: ${appCount}\n   📝 نص: ${textCount}\n🛒 المبيعات: ${totalSales}\n💰 الإيرادات: ${formatPrice(totalRevenue)}`;
+    
+    await ctx.reply(msg, { parse_mode: 'Markdown' });
+});
+
+// ==================== تصدير البيانات ====================
+bot.hears('📤 تصدير البيانات', async (ctx) => {
+    if (!isAdmin(ctx.from.id)) return;
+    
+    const backup = { products, users, timestamp: Date.now() };
+    const backupJson = JSON.stringify(backup, null, 2);
+    const backupBuffer = Buffer.from(backupJson, 'utf-8');
+    await ctx.replyWithDocument({ source: backupBuffer, filename: `idlebx-backup-${Date.now()}.json` });
+});
+
+// ==================== رصيدي ====================
+bot.hears('💰 رصيدي', async (ctx) => {
+    const user = getUser(ctx.from.id);
+    await ctx.reply(`💰 *رصيدك:* ${formatPrice(user.balance)}`, { parse_mode: 'Markdown' });
+});
+
+// ==================== سلتي ====================
+bot.hears('🛒 سلتي', async (ctx) => {
     const user = getUser(ctx.from.id);
     const cart = user.cart || [];
-    if (cart.length === 0) return ctx.reply("Your cart is empty");
-    let msg = "Your Cart:\n\n";
+    if (cart.length === 0) return ctx.reply("🛒 سلتك فارغة");
+    
+    let msg = "🛒 *سلتك:*\n\n";
     let total = 0;
     for (const item of cart) {
         const p = getProduct(item.id);
         if (p) {
-            msg += `${p.name} x${item.qty} = ${formatPrice(p.price * item.qty)}\n`;
+            msg += `📦 ${p.name} ×${item.qty} = ${formatPrice(p.price * item.qty)}\n`;
             total += p.price * item.qty;
         }
     }
-    msg += `\nTotal: ${formatPrice(total)}`;
-    await ctx.reply(msg);
+    msg += `\n💰 *المجموع:* ${formatPrice(total)}`;
+    await ctx.reply(msg, { parse_mode: 'Markdown' });
 });
 
-// Coupons
-bot.hears('Coupons', async (ctx) => {
-    if (coupons.length === 0) return ctx.reply("No coupons available");
-    let msg = "Available Coupons:\n\n";
-    for (const c of coupons) {
-        msg += `${c.code} - ${c.type === 'percent' ? c.discount + '%' : formatPrice(c.discount)} off\n`;
-    }
-    await ctx.reply(msg);
+// ==================== كوبونات ====================
+bot.hears('🏷️ كوبونات', async (ctx) => {
+    await ctx.reply("🏷️ أرسل كود الخصم: /coupon <الكود>", { parse_mode: 'Markdown' });
 });
 
-// Invite Friend
-bot.hears('Invite Friend', async (ctx) => {
+bot.command('coupon', async (ctx) => {
+    await ctx.reply("⚠️ نظام الكوبونات قيد التطوير");
+});
+
+// ==================== دعوة صديق ====================
+bot.hears('📤 دعوة صديق', async (ctx) => {
     const user = getUser(ctx.from.id);
     const link = `https://t.me/${BOT_NAME}?start=${ctx.from.id}`;
-    await ctx.reply(`Your invite link:\n${link}\n\nEach friend who joins gives you 5000 SYP bonus!`);
+    await ctx.reply(`📤 *رابط دعوتك:*\n\`${link}\`\n\n🎁 كل صديق ينضم عبر رابطك يربحك 5000 SYP!`, { parse_mode: 'Markdown' });
 });
 
-// My Balance
-bot.hears('My Balance', async (ctx) => {
+// ==================== مساعدة ====================
+bot.hears('❓ مساعدة', async (ctx) => {
+    await ctx.reply(`🔧 *الأوامر المتاحة*\n\n📦 /products - عرض المنتجات\n💰 /balance - رصيدك\n🛒 /cart - سلتك\n🏷️ /coupon <كود> - تفعيل كوبون\n📤 /referral - رابط دعوتك\n\nللمشرف:\n/addproduct - إضافة منتج\n/del_1 - حذف منتج\n/charge - شحن رصيد`, { parse_mode: 'Markdown' });
+});
+
+// ==================== أوامر سريعة ====================
+bot.command('products', async (ctx) => {
+    if (products.length === 0) return ctx.reply("لا توجد منتجات");
+    let msg = "📦 *المنتجات:*\n\n";
+    for (const p of products) {
+        const icon = { link: '🔗', file: '📁', app: '📱', text: '📝' }[p.type] || '📦';
+        msg += `${icon} *${p.id}.* ${p.name} - ${formatPrice(p.price)}\n`;
+    }
+    await ctx.reply(msg, { parse_mode: 'Markdown' });
+});
+
+bot.command('balance', async (ctx) => {
     const user = getUser(ctx.from.id);
-    await ctx.reply(`Your balance: ${formatPrice(user.balance)}`);
+    await ctx.reply(`💰 *رصيدك:* ${formatPrice(user.balance)}`, { parse_mode: 'Markdown' });
 });
 
-// Ratings
-bot.hears('Ratings', async (ctx) => {
-    const topRated = [...products].sort((a, b) => (b.rating || 0) - (a.rating || 0)).slice(0, 5);
-    if (topRated.length === 0) return ctx.reply("No ratings yet");
-    let msg = "Top Rated Products:\n\n";
-    for (const p of topRated) {
-        msg += `${p.name} - ${p.rating || 4.5}/5\n`;
-    }
-    await ctx.reply(msg);
-});
-
-// Help
-bot.hears('Help', async (ctx) => {
-    await ctx.reply(`Commands:\n/products - List products\n/balance - Your balance\n/cart - Your cart\n/coupon CODE - Apply coupon\n/referral - Your invite link`);
-});
-
-// ==================== Admin Commands ====================
-
-// Users list
-bot.hears('Users', async (ctx) => {
-    if (!isAdmin(ctx.from.id)) return;
-    const userList = Object.entries(users).slice(0, 20);
-    if (userList.length === 0) return ctx.reply("No users");
-    let msg = "Users List:\n\n";
-    for (const [id, data] of userList) {
-        msg += `ID: ${id}\n   Name: ${data.name}\n   Balance: ${formatPrice(data.balance)}\n   Purchases: ${data.purchases?.length || 0}\n\n`;
-    }
-    await ctx.reply(msg);
-});
-
-// Earnings
-bot.hears('Earnings', async (ctx) => {
-    if (!isAdmin(ctx.from.id)) return;
-    const totalRevenue = orders.reduce((s, o) => s + (o.amount || 0), 0);
-    const totalSales = products.reduce((s, p) => s + (p.sales || 0), 0);
-    await ctx.reply(`Total Sales: ${totalSales}\nTotal Revenue: ${formatPrice(totalRevenue)}`);
-});
-
-// Broadcast
-bot.hears('Broadcast', async (ctx) => {
-    if (!isAdmin(ctx.from.id)) return;
-    await ctx.reply("Send the message to broadcast to all users:");
-    bot.once('text', async (ctx2) => {
-        const message = ctx2.message.text;
-        let success = 0, failed = 0;
-        for (const uid of Object.keys(users)) {
-            try {
-                await bot.telegram.sendMessage(uid, `Announcement:\n\n${message}`);
-                success++;
-            } catch(e) { failed++; }
+bot.command('cart', async (ctx) => {
+    const user = getUser(ctx.from.id);
+    const cart = user.cart || [];
+    if (cart.length === 0) return ctx.reply("🛒 سلتك فارغة");
+    let msg = "🛒 *سلتك:*\n\n";
+    let total = 0;
+    for (const item of cart) {
+        const p = getProduct(item.id);
+        if (p) {
+            msg += `📦 ${p.name} ×${item.qty} = ${formatPrice(p.price * item.qty)}\n`;
+            total += p.price * item.qty;
         }
-        await ctx2.reply(`Sent to ${success} users, Failed: ${failed}`);
-    });
+    }
+    msg += `\n💰 *المجموع:* ${formatPrice(total)}`;
+    await ctx.reply(msg, { parse_mode: 'Markdown' });
 });
 
-// Stats
-bot.hears('Stats', async (ctx) => {
-    if (!isAdmin(ctx.from.id)) return;
-    const totalUsers = Object.keys(users).length;
-    const totalProducts = products.length;
-    const totalOrders = orders.length;
-    const totalRevenue = orders.reduce((s, o) => s + (o.amount || 0), 0);
-    await ctx.reply(`Users: ${totalUsers}\nProducts: ${totalProducts}\nOrders: ${totalOrders}\nRevenue: ${formatPrice(totalRevenue)}`);
+bot.command('referral', async (ctx) => {
+    const user = getUser(ctx.from.id);
+    const link = `https://t.me/${BOT_NAME}?start=${ctx.from.id}`;
+    await ctx.reply(`📤 *رابط دعوتك:*\n\`${link}\``, { parse_mode: 'Markdown' });
 });
 
-// Settings
-bot.hears('Settings', async (ctx) => {
-    if (!isAdmin(ctx.from.id)) return;
-    await ctx.reply(`Admin ID: ${ADMIN_ID}\nBot: @${BOT_NAME}\nProducts: ${products.length}\nUsers: ${Object.keys(users).length}`);
-});
+// ==================== API للموقع ====================
+app.get('/api/products', (req, res) => res.json(products.map(p => ({
+    id: p.id,
+    name: p.name,
+    price: p.price,
+    type: p.type,
+    category: p.category,
+    desc: p.desc,
+    stock: p.stock
+}))));
 
-// Backup
-bot.hears('Backup', async (ctx) => {
-    if (!isAdmin(ctx.from.id)) return;
-    const backup = { products, users, coupons, orders, timestamp: Date.now() };
-    const backupJson = JSON.stringify(backup, null, 2);
-    const backupBuffer = Buffer.from(backupJson, 'utf-8');
-    await ctx.replyWithDocument({ source: backupBuffer, filename: `backup-${Date.now()}.json` });
-});
-
-// Charge user
-bot.command('charge', async (ctx) => {
-    if (!isAdmin(ctx.from.id)) return;
-    const args = ctx.message.text.split(' ');
-    if (args.length < 3) return ctx.reply("Usage: /charge <user_id> <amount>");
-    const userId = parseInt(args[1]);
-    const amount = parseInt(args[2]);
-    if (!users[userId]) users[userId] = { balance: 0, purchases: [], name: "User" };
-    users[userId].balance += amount;
-    saveUsers();
-    await ctx.reply(`Charged ${formatPrice(amount)} to user ${userId}`);
-    await bot.telegram.sendMessage(userId, `Your balance has been increased by ${formatPrice(amount)}`);
-});
-
-// Add product
-bot.command('addproduct', async (ctx) => {
-    if (!isAdmin(ctx.from.id)) return;
-    const args = ctx.message.text.split(' ');
-    if (args.length < 4) return ctx.reply("Usage: /addproduct <name> <price> <link>");
-    const name = args[1];
-    const price = parseInt(args[2]);
-    const link = args[3];
-    const newId = products.length ? Math.max(...products.map(p => p.id)) + 1 : 1;
-    products.push({ id: newId, name, price, link, category: "General", desc: "Added via bot", stock: 999, sales: 0, rating: 4.5 });
-    saveProducts();
-    await ctx.reply(`Product added: ${name}\nShare link: ${getShareLink(newId)}`);
-});
-
-// Delete product
-bot.command('delproduct', async (ctx) => {
-    if (!isAdmin(ctx.from.id)) return;
-    const args = ctx.message.text.split(' ');
-    if (args.length < 2) return ctx.reply("Usage: /delproduct <product_id>");
-    const id = parseInt(args[1]);
-    const index = products.findIndex(p => p.id === id);
-    if (index === -1) return ctx.reply("Product not found");
-    const deleted = products[index];
-    products.splice(index, 1);
-    saveProducts();
-    await ctx.reply(`Product deleted: ${deleted.name}`);
-});
-
-// Add coupon
-bot.command('addcoupon', async (ctx) => {
-    if (!isAdmin(ctx.from.id)) return;
-    const args = ctx.message.text.split(' ');
-    if (args.length < 4) return ctx.reply("Usage: /addcoupon <code> <discount> <type>\ntype: percent or fixed");
-    const code = args[1].toUpperCase();
-    const discount = parseInt(args[2]);
-    const type = args[3];
-    coupons.push({ code, discount, type, uses: 0, maxUses: 999, minOrder: 0 });
-    saveCoupons();
-    await ctx.reply(`Coupon added: ${code} - ${type === 'percent' ? discount + '%' : formatPrice(discount)}`);
-});
-
-// Apply coupon
-bot.command('coupon', async (ctx) => {
-    const userId = ctx.from.id;
-    const args = ctx.message.text.split(' ');
-    if (args.length < 2) return ctx.reply("Usage: /coupon <code>");
-    const code = args[1].toUpperCase();
-    const coupon = coupons.find(c => c.code === code);
-    if (!coupon) return ctx.reply("Invalid coupon");
-    const user = getUser(userId);
-    user.activeCoupon = { code: coupon.code, discount: coupon.discount, type: coupon.type };
-    saveUsers();
-    await ctx.reply(`Coupon ${code} activated!`);
-});
-
-// ==================== API ====================
-app.get('/api/products', (req, res) => res.json(products));
-app.get('/api/stats', (req, res) => res.json({ products: products.length, users: Object.keys(users).length, orders: orders.length }));
+app.get('/api/stats', (req, res) => res.json({ 
+    products: products.length, 
+    users: Object.keys(users).length,
+    types: {
+        link: products.filter(p => p.type === 'link').length,
+        file: products.filter(p => p.type === 'file').length,
+        app: products.filter(p => p.type === 'app').length,
+        text: products.filter(p => p.type === 'text').length
+    }
+}));
 
 // ==================== تشغيل البوت ====================
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`HTTP server on port ${PORT}`));
+app.listen(PORT, () => console.log(`✅ HTTP على منفذ ${PORT}`));
 
 bot.launch().then(() => {
-    console.log(`Bot @${BOT_NAME} is running!`);
-    console.log(`Admin ID: ${ADMIN_ID}`);
-    console.log(`Products: ${products.length}`);
-    console.log(`Users: ${Object.keys(users).length}`);
+    console.log(`✅ البوت @${BOT_NAME} يعمل!`);
+    console.log(`👑 المشرف: ${ADMIN_ID}`);
+    console.log(`📦 المنتجات: ${products.length}`);
+    console.log(`👥 المستخدمين: ${Object.keys(users).length}`);
 }).catch((err) => {
-    console.error('Failed to launch bot:', err.message);
+    console.error('❌ فشل تشغيل البوت:', err.message);
 });
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
